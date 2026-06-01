@@ -1,0 +1,10 @@
+# Vendored sluice binary (used only for offline SLUICE_SOURCE=vendored builds)
+/bin/sluice
+
+# Local state / logs if anyone runs the container with bind mounts
+/state/
+*.log
+
+# Editor / OS noise
+.DS_Store
+*.swp

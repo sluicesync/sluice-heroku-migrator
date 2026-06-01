@@ -1,0 +1,9 @@
+# Keep everything LF so shell scripts + the entrypoint run in the Linux
+# container regardless of the host that checked the repo out.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.rb        text eol=lf
+*.html      text eol=lf
+Dockerfile  text eol=lf
+entrypoint.sh text eol=lf
