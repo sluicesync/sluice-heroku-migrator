@@ -59,6 +59,10 @@ EOF
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Ruby tags backtick/File output with the locale encoding; sluice emits UTF-8
+# (em-dashes in help/logs). C.UTF-8 is built into glibc (no locale-gen needed)
+# and keeps the dashboard from 500-ing on "invalid byte sequence in US-ASCII".
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

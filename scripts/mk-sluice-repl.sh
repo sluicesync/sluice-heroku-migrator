@@ -121,7 +121,7 @@ case "$PHASE" in
     --source-driver=postgres-trigger --source="$PRIMARY" \
     --target-driver=postgres --target="$REPLICA" \
     --stream-id="$STREAM_ID" \
-    --metrics-addr="$METRICS_ADDR" \
+    --metrics-listen="$METRICS_ADDR" \
     $RESUME_FLAG \
     >> "$SYNC_LOG" 2>&1 &
   echo $! > "$SYNC_PID_FILE"

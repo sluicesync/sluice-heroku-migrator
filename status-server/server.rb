@@ -32,6 +32,13 @@ require "net/http"
 require "uri"
 require "time"
 
+# sluice's CLI output (help text, logs) contains UTF-8 (em-dashes etc.). If the
+# container locale is US-ASCII, backtick/File reads tag those bytes as ASCII and
+# any later String#scan / JSON.generate raises "invalid byte sequence in
+# US-ASCII". Force UTF-8 defaults; log reads are additionally scrubbed below.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -378,7 +385,7 @@ end
 
 def tail_sync_log(lines = 300)
   return "" unless File.exist?(SYNC_LOG_FILE)
-  `tail -#{lines} "#{SYNC_LOG_FILE}" 2>/dev/null`
+  `tail -#{lines} "#{SYNC_LOG_FILE}" 2>/dev/null`.scrub
 rescue StandardError
   ""
 end
@@ -969,7 +976,7 @@ server.mount_proc "/logs" do |req, res|
 
   logs = {}
   logs["sync"] = tail_sync_log(lines) if File.exist?(SYNC_LOG_FILE)
-  logs["setup"] = (File.read(SETUP_LOG_FILE) rescue "Unable to read setup log") if File.exist?(SETUP_LOG_FILE)
+  logs["setup"] = (File.read(SETUP_LOG_FILE).scrub rescue "Unable to read setup log") if File.exist?(SETUP_LOG_FILE)
   res.body = JSON.generate(logs)
 end
 
