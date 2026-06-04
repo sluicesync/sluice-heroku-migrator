@@ -90,10 +90,19 @@ case "$PHASE" in
   # --capture-payload=full keeps the full before/after image (optimistic
   # divergence detection on apply) -- the safe default, byte-identical to a
   # plain trigger CDC install. PK-changing UPDATEs stay correct.
+  #
+  # --allow-polled-fingerprint is REQUIRED on Heroku: Heroku Postgres roles are
+  # never superusers and lack pg_create_event_trigger, so the engine's default
+  # event-trigger-based DDL detection is refused. The polled-fingerprint
+  # fallback detects schema drift by hashing the catalog instead. That's the
+  # right trade here -- this tool already forbids DDL during the migration, so
+  # the weaker (poll-based) DDL detection is never exercised in the happy path;
+  # it only exists to halt loudly if someone breaks the "no schema changes" rule.
   "$SLUICE" trigger setup \
     --dsn="$PRIMARY" \
     --tables="$TABLES" \
-    --capture-payload=full
+    --capture-payload=full \
+    --allow-polled-fingerprint
   echo "Trigger engine installed. Change capture is now active on the primary."
   ;;
 

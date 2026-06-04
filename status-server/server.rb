@@ -287,7 +287,7 @@ end
 
 def list_public_tables
   return [] unless HEROKU_URL
-  output = `psql "#{HEROKU_URL}" -A -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" 2>/dev/null`.strip
+  output = `psql "#{HEROKU_URL}" -A -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename NOT LIKE 'sluice\\_%' ORDER BY tablename;" 2>/dev/null`.strip
   return [] if output.empty?
   output.split("\n").map { |t| normalize_table_name(t) }.compact.uniq
 rescue StandardError
@@ -302,6 +302,7 @@ def check_tables_without_pk_or_unique
   query = "SELECT c.relname FROM pg_class c " \
           "JOIN pg_namespace n ON n.oid = c.relnamespace " \
           "WHERE n.nspname = 'public' AND c.relkind = 'r' " \
+          "AND c.relname NOT LIKE 'sluice\\_%' " \
           "AND NOT EXISTS (" \
           "  SELECT 1 FROM pg_index i " \
           "  WHERE i.indrelid = c.oid " \
@@ -325,6 +326,7 @@ def check_tables_with_generated_columns
           "JOIN pg_class c ON c.oid = a.attrelid " \
           "JOIN pg_namespace n ON n.oid = c.relnamespace " \
           "WHERE n.nspname = 'public' AND c.relkind = 'r' " \
+          "  AND c.relname NOT LIKE 'sluice\\_%' " \
           "  AND a.attnum > 0 AND NOT a.attisdropped " \
           "  AND a.attgenerated <> '' " \
           "ORDER BY c.relname, a.attnum;"
@@ -366,7 +368,8 @@ def get_table_size_estimates(db_url)
   return {} unless db_url
   query = "SELECT c.relname, pg_total_relation_size(c.oid)::bigint FROM pg_class c " \
           "JOIN pg_namespace n ON n.oid = c.relnamespace " \
-          "WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY c.relname;"
+          "WHERE n.nspname = 'public' AND c.relkind = 'r' " \
+          "AND c.relname NOT LIKE 'sluice\\_%' ORDER BY c.relname;"
   output = `psql "#{db_url}" -A -t -c "#{query}" 2>/dev/null`.strip
   return {} if output.empty?
 
