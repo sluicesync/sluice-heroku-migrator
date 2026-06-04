@@ -8,13 +8,10 @@
 # replication daemon to install -- sluice is a single static Go binary, which is
 # the whole reason this image is a fraction of the Bucardo migrator's size.
 #
-# sluice currently lives in a PRIVATE module (github.com/orware/sluice), so the
-# builder needs read access. Provide it as a BuildKit secret at build time:
+# sluice is a public Go module (sluicesync.dev/sluice), so the builder installs
+# it straight from the module proxy -- no token or GOPRIVATE needed:
 #
-#   DOCKER_BUILDKIT=1 docker build \
-#     --secret id=gh_token,env=GH_TOKEN \
-#     --build-arg SLUICE_VERSION=v0.97.2 \
-#     -t sluice-heroku-migrator .
+#   docker build --build-arg SLUICE_VERSION=v0.99.2 -t sluice-heroku-migrator .
 #
 # Offline / vendored alternative: drop a prebuilt linux/amd64 binary at
 # ./bin/sluice and build with `--build-arg SLUICE_SOURCE=vendored`.
@@ -22,19 +19,18 @@
 # ---------------------------------------------------------------------------
 # Stage 1: build (or vendor) the sluice binary
 # ---------------------------------------------------------------------------
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 ARG SLUICE_VERSION=latest
-ARG SLUICE_MODULE=github.com/orware/sluice
+ARG SLUICE_MODULE=sluicesync.dev/sluice
 ARG SLUICE_SOURCE=git
-ENV GOPRIVATE=github.com/orware GOFLAGS=-trimpath CGO_ENABLED=0
+ENV GOFLAGS=-trimpath CGO_ENABLED=0
 
 WORKDIR /build
 COPY bin/ /build/bin/
 
-# Build from the private module using a short-lived token secret, OR use a
-# vendored binary copied in above. The secret is never written to a layer.
-RUN --mount=type=secret,id=gh_token,required=false <<'EOF'
+# Build from the public module proxy, OR use a vendored binary copied in above.
+RUN <<'EOF'
 set -e
 if [ "$SLUICE_SOURCE" = "vendored" ]; then
   if [ ! -x /build/bin/sluice ]; then
@@ -44,9 +40,6 @@ if [ "$SLUICE_SOURCE" = "vendored" ]; then
   cp /build/bin/sluice /build/sluice
   echo "Using vendored sluice binary."
 else
-  if [ -f /run/secrets/gh_token ]; then
-    git config --global url."https://x-access-token:$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/"
-  fi
   go install "${SLUICE_MODULE}/cmd/sluice@${SLUICE_VERSION}"
   cp "$(go env GOPATH)/bin/sluice" /build/sluice
 fi

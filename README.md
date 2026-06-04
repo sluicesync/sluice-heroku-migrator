@@ -1,14 +1,14 @@
-[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://www.heroku.com/deploy?template=https://github.com/orware/sluice-heroku-migrator)
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://www.heroku.com/deploy?template=https://github.com/sluicesync/sluice-heroku-migrator)
 
 # Migrate from Heroku Postgres to PlanetScale (with sluice)
 
 This tool helps you migrate your Heroku Postgres database to [PlanetScale](https://planetscale.com) with minimal downtime. It runs as a temporary Heroku app that copies your data and keeps both databases in sync until you're ready to cut over.
 
-> This is a [sluice](https://github.com/orware/sluice)-powered fork of PlanetScale's [heroku-migrator](https://github.com/planetscale/heroku-migrator). It keeps the same dashboard, phase model, and cutover flow, but swaps the replication engine from **Bucardo** to **sluice's postgres-trigger CDC engine**. See [How it differs from the Bucardo migrator](#how-it-differs-from-the-bucardo-migrator).
+> This is a [sluice](https://github.com/sluicesync/sluice)-powered fork of PlanetScale's [heroku-migrator](https://github.com/planetscale/heroku-migrator). It keeps the same dashboard, phase model, and cutover flow, but swaps the replication engine from **Bucardo** to **sluice's postgres-trigger CDC engine**. See [How it differs from the Bucardo migrator](#how-it-differs-from-the-bucardo-migrator).
 
 ## How does it work?
 
-This app uses [sluice](https://github.com/orware/sluice), an open-source database migration and continuous-sync tool, to copy your data and keep it in sync in real time. sluice's **postgres-trigger engine** installs triggers on your Heroku tables that capture every insert, update, and delete into a change-log table; sluice snapshots your data, applies it to PlanetScale, then continuously replays the change log. When you're ready, you switch your app to PlanetScale and tear down the replication. The whole process is managed through a web dashboard.
+This app uses [sluice](https://github.com/sluicesync/sluice), an open-source database migration and continuous-sync tool, to copy your data and keep it in sync in real time. sluice's **postgres-trigger engine** installs triggers on your Heroku tables that capture every insert, update, and delete into a change-log table; sluice snapshots your data, applies it to PlanetScale, then continuously replays the change log. When you're ready, you switch your app to PlanetScale and tear down the replication. The whole process is managed through a web dashboard.
 
 Trigger-based capture is deliberate: it works on **every Heroku Postgres tier**, including the lower tiers (`essential-0`, `standard-0`) that don't grant the `REPLICATION` role attribute and therefore can't be migrated with logical-replication-slot tools. If your role can `CREATE TRIGGER`, this tool works.
 
@@ -92,7 +92,7 @@ docker run -d \
 Click the button at the top, or deploy manually:
 
 ```bash
-git clone https://github.com/orware/sluice-heroku-migrator.git
+git clone https://github.com/sluicesync/sluice-heroku-migrator.git
 cd sluice-heroku-migrator
 heroku create my-migration --stack container
 heroku config:set \

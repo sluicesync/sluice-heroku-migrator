@@ -4,7 +4,7 @@ You are helping a user migrate their Heroku Postgres database to PlanetScale usi
 
 ## Project overview
 
-This tool uses [sluice](https://github.com/orware/sluice)'s **postgres-trigger CDC engine** to replicate data from Heroku Postgres to PlanetScale with minimal downtime. It runs as a temporary Heroku app (or Docker container) with a web dashboard. It is a fork of PlanetScale's Bucardo-based `heroku-migrator` with the replication engine swapped to sluice — same dashboard and phase model, different internals.
+This tool uses [sluice](https://github.com/sluicesync/sluice)'s **postgres-trigger CDC engine** to replicate data from Heroku Postgres to PlanetScale with minimal downtime. It runs as a temporary Heroku app (or Docker container) with a web dashboard. It is a fork of PlanetScale's Bucardo-based `heroku-migrator` with the replication engine swapped to sluice — same dashboard and phase model, different internals.
 
 **Key files:**
 - `entrypoint.sh` — container entry point. Sets up env/TLS, writes initial status, starts the dashboard server, and warm-resumes the sync after a dyno restart.
