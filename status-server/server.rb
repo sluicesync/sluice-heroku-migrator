@@ -695,9 +695,18 @@ end
 # ---------------------------------------------------------------------------
 # HTML dashboard
 # ---------------------------------------------------------------------------
-DASHBOARD_HTML = File.read(File.join(__dir__, "dashboard.html"))
+DASHBOARD_PATH = File.join(__dir__, "dashboard.html")
+# Read at boot as a fallback, but re-read per request (below) so a `docker cp`
+# of an updated dashboard.html is picked up WITHOUT restarting the server --
+# which matters because the status server is this container's PID-1 keep-alive
+# (entrypoint.sh `wait`s on it), so restarting it restarts the whole container.
+DASHBOARD_HTML = File.read(DASHBOARD_PATH)
 
 def render_dashboard
+  # Per-request read so dashboard edits go live on the next page load; fall back
+  # to the boot-time copy if the file is transiently unreadable mid-`docker cp`.
+  File.read(DASHBOARD_PATH)
+rescue StandardError
   DASHBOARD_HTML
 end
 

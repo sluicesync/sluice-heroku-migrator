@@ -653,6 +653,14 @@
                 <div class="kv-label">Copy Progress</div>
                 <div class="kv-value" id="sluiceCopyPercent">--</div>
               </div>
+              <div id="sluiceThroughputItem">
+                <div class="kv-label">Copy Throughput</div>
+                <div class="kv-value" id="sluiceThroughput">--</div>
+              </div>
+              <div id="sluiceEtaItem">
+                <div class="kv-label">Estimated Time Remaining</div>
+                <div class="kv-value" id="sluiceEta">--</div>
+              </div>
               <div id="sluiceLastGoodItem" style="grid-column: 1 / -1;">
                 <div class="kv-label">Last Good Sync</div>
                 <div class="kv-value mono" id="sluiceLastGood">--</div>
@@ -1007,6 +1015,8 @@
       setVisibleById('sluiceTablesItem', true);
       setVisibleById('sluiceCopiedBytesItem', inInitialCopy || inReplication);
       setVisibleById('sluiceCopyPercentItem', inInitialCopy || inReplication);
+      setVisibleById('sluiceThroughputItem', inInitialCopy);
+      setVisibleById('sluiceEtaItem', inInitialCopy);
 
       // Replication delta/lag metrics are only meaningful once initial copy is complete.
       setVisibleById('sluiceInsertedItem', inReplication);
@@ -1114,6 +1124,10 @@
       const byteWeighted = signals.byte_weighted || {};
       document.getElementById('sluiceCopiedBytes').textContent = formatCopiedBytesText(byteWeighted);
       document.getElementById('sluiceCopyPercent').textContent = formatCopyPercentText(byteWeighted);
+      const throughputEta = signals.throughput_eta || {};
+      const sigCopyPhase = signals.table_phase && signals.table_phase.phase;
+      document.getElementById('sluiceThroughput').textContent = formatThroughputText(throughputEta, sigCopyPhase);
+      document.getElementById('sluiceEta').textContent = formatEtaText(throughputEta, sigCopyPhase);
       document.getElementById('sluiceDelay').textContent = formatLagDelayText(delay, b);
       document.getElementById('sluiceBacklogTrend').textContent = delay.backlog_trend || '--';
       document.getElementById('sluiceLagHealth').textContent = formatLagHealthText(delay, b);
@@ -1605,8 +1619,8 @@
         .then(r => r.json())
         .then(data => {
           latestLogsData = data || {};
-          writeLogBlock('setupLog', data.setup || 'No setup log available.');
-          writeLogBlock('sluiceLog', data.sluice || 'No sluice log available.');
+          writeLogBlock('setupLog', data.setup || 'No setup log available yet.');
+          writeLogBlock('sluiceLog', data.sync || 'Sync log will appear here once replication starts (schema + bulk copy, then live CDC).');
           lastLogsTime = Date.now();
           updateLogsUpdatedText();
         })
@@ -1730,6 +1744,25 @@
     function formatCopyPercentText(byteWeighted) {
       const pct = byteWeighted && Number(byteWeighted.percent);
       if (Number.isFinite(pct)) return pct.toFixed(1) + '%';
+      return '--';
+    }
+    function formatThroughputText(throughputEta, copyPhase) {
+      const mbPerMin = throughputEta && Number(throughputEta.mb_per_min);
+      if (Number.isFinite(mbPerMin) && mbPerMin > 0) {
+        const mbPerSec = mbPerMin / 60;
+        return mbPerSec.toFixed(1) + ' MB/s (' + mbPerMin.toFixed(0) + ' MB/min)';
+      }
+      if (copyPhase === 'in-progress') return 'Measuring…';
+      return '--';
+    }
+    function formatEtaText(throughputEta, copyPhase) {
+      const lo = throughputEta && Number(throughputEta.eta_min_minutes);
+      const hi = throughputEta && Number(throughputEta.eta_max_minutes);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) {
+        const fmt = (m) => m >= 60 ? (m / 60).toFixed(1) + ' h' : Math.max(m, 0) + ' min';
+        return (lo === hi) ? fmt(lo) : fmt(lo) + ' – ' + fmt(hi);
+      }
+      if (copyPhase === 'in-progress') return 'Measuring…';
       return '--';
     }
     function escapeHtml(str) {

@@ -117,9 +117,14 @@ case "$PHASE" in
   if [ "$NO_INITIAL_COPY" -eq 1 ]; then
     # Warm-resume: a prior run already landed the snapshot and recorded a
     # position in sluice_cdc_state on the target. `sync start` auto-detects the
-    # persisted position and resumes CDC without re-copying.
-    RESUME_FLAG="--resume"
-    echo "Launching sluice sync (warm resume -- skipping initial copy)..."
+    # persisted position and resumes CDC without re-copying -- there is NO
+    # explicit resume/skip-copy flag on current sluice (warm-resume is
+    # automatic). The cold-start pre-flight additionally refuses to bulk-copy
+    # into a populated target unless --force-cold-start, so a plain `sync start`
+    # is safe even if the position were unexpectedly missing (it fails loudly
+    # rather than re-copying). A literal `--resume` flag here is rejected by
+    # sluice ("unknown flag --resume") and breaks auto-resume-after-restart.
+    echo "Launching sluice sync (warm resume -- auto-detects persisted position, skips initial copy)..."
   else
     echo "Launching sluice sync (cold start -- schema + bulk copy + CDC)..."
   fi
