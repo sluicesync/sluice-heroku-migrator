@@ -1129,7 +1129,7 @@
       document.getElementById('sluiceThroughput').textContent = formatThroughputText(throughputEta, sigCopyPhase);
       document.getElementById('sluiceEta').textContent = formatEtaText(throughputEta, sigCopyPhase);
       document.getElementById('sluiceDelay').textContent = formatLagDelayText(delay, b);
-      document.getElementById('sluiceBacklogTrend').textContent = delay.backlog_trend || '--';
+      document.getElementById('sluiceBacklogTrend').textContent = formatBacklogTrendText(delay.backlog_trend);
       document.getElementById('sluiceLagHealth').textContent = formatLagHealthText(delay, b);
       document.getElementById('sluiceLagBlocker').textContent = formatLagBlockerText(delay.blocker_reason);
     }
@@ -1688,7 +1688,19 @@
     function formatLagHealthText(delay, b) {
       const state = (delay && delay.health_state) || '';
       const reason = delay && delay.blocker_reason;
-      if (state === 'healthy') return 'Healthy: replication is current and syncing normally.';
+      // Caught-up is the authoritative healthy state: the applied watermark
+      // equals the source's max change id, so there is nothing to apply -- even
+      // if the position is "old" because the source is simply quiet.
+      if (delay && delay.caught_up === true) {
+        return 'Caught up: the target has applied every captured change (0 rows behind).';
+      }
+      if (state === 'healthy') {
+        const n = delay && Number(delay.backlog_rows);
+        if (Number.isFinite(n) && n > 0) {
+          return 'Healthy: replication is current (' + n.toLocaleString() + ' rows behind and not growing).';
+        }
+        return 'Healthy: replication is current and syncing normally.';
+      }
       if (state === 'degraded' && isPostCopySettling(delay, b)) {
         return 'Settling: initial copy just completed; waiting for the next steady sync checkpoint.';
       }
@@ -1704,12 +1716,33 @@
     function formatLagDelayText(delay, b) {
       const lagSeconds = delay && delay.seconds_since_last_good;
       const reason = delay && delay.blocker_reason;
+      const backlog = delay && Number(delay.backlog_rows);
+      // Prefer the TRUE row backlog. Caught up == 0 rows behind, regardless of
+      // how long since the last checkpoint (a quiet source is not lag).
+      if (delay && delay.caught_up === true) {
+        const idle = Number.isFinite(Number(lagSeconds)) && Number(lagSeconds) > 120
+          ? ' (source idle ' + formatDuration(lagSeconds) + ')' : '';
+        return 'Caught up — 0 rows behind' + idle;
+      }
+      if (Number.isFinite(backlog)) {
+        return backlog.toLocaleString() + ' row' + (backlog === 1 ? '' : 's') + ' behind';
+      }
       if (isPostCopySettling(delay, b)) {
         return 'Recent copy completed; checkpoint pending (' + formatDuration(lagSeconds) + ')';
       }
       if (Number.isFinite(Number(lagSeconds))) return formatDuration(lagSeconds);
       if (reason === 'initial_copy_not_finished') return 'Not available yet (initial copy running)';
       return '--';
+    }
+    function formatBacklogTrendText(trend) {
+      switch (trend) {
+        case 'caught_up': return 'Caught up';
+        case 'growing': return 'Growing';
+        case 'shrinking': return 'Shrinking (catching up)';
+        case 'stable': return 'Stable';
+        case 'unknown': return '--';
+        default: return trend || '--';
+      }
     }
     function formatsluiceStateText(b) {
       const state = b && b.current_state;

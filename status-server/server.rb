@@ -53,6 +53,31 @@ SCRIPTS_DIR = "/opt/sluice/scripts"
 SLUICE_BIN = ENV["SLUICE_BIN"] || "sluice"
 STREAM_ID = ENV["SLUICE_STREAM_ID"] || "ps_import"
 
+# sluice's postgres-trigger engine appends every captured row change to this
+# table on the source with a monotonic bigint id; the applied CDC position is
+# {"last_id":N}. Comparing source max(id) to the applied last_id gives the TRUE
+# replication backlog in rows -- which distinguishes "caught up, source quiet"
+# (backlog 0, position age grows harmlessly) from "falling behind" (backlog
+# grows). The freshness-age heuristic alone conflates the two.
+SOURCE_CHANGE_LOG = ENV["SLUICE_CHANGE_LOG_TABLE"] || "public.sluice_change_log"
+# Row backlog above which cutover surfaces a "replication_lag_high" warning.
+LAG_ROWS_THRESHOLD = (ENV["LAG_ROWS_THRESHOLD"] || 10_000).to_i
+
+# The container's libpq (psql 15) predates the `sslrootcert=system` special
+# value (libpq 16+); it treats "system" as a literal filename and fails with
+# `root certificate file "system" does not exist`. sluice's own Go TLS handles
+# it, but every psql shell-out below would otherwise silently fail (errors go to
+# /dev/null) -- which broke _ps_migration_state persistence (phase never saved,
+# entrypoint auto-resume skipped) and made cdc_position_exists? always false (a
+# "Start" click would relaunch a FULL initial copy instead of warm-resuming).
+# Point sslrootcert at the real system CA bundle so verify-full still verifies.
+PSQL_SSLROOTCERT = ENV["PSQL_SSLROOTCERT"] || "/etc/ssl/certs/ca-certificates.crt"
+
+def psql_safe_url(url)
+  return url if url.nil?
+  url.gsub(/sslrootcert=system\b/, "sslrootcert=#{PSQL_SSLROOTCERT}")
+end
+
 HEROKU_URL = ENV["HEROKU_URL"]
 PLANETSCALE_URL = ENV["PLANETSCALE_URL"]
 
@@ -165,7 +190,7 @@ end
 # PlanetScale target so it outlives the ephemeral dyno filesystem.
 # ---------------------------------------------------------------------------
 def ps_migrate_query(sql)
-  `psql "#{PLANETSCALE_URL}" -A -t -c "#{sql}" 2>/dev/null`.strip
+  `psql "#{psql_safe_url(PLANETSCALE_URL)}" -A -t -c "#{sql}" 2>/dev/null`.strip
 end
 
 def ensure_migration_state_table
@@ -248,13 +273,52 @@ def get_sluice_status
   result["position_token"] = stream.dig("position", "token").to_s
   result["position_engine"] = stream.dig("position", "engine").to_s
   # A maintained position row means CDC is live. Lag/idle is surfaced separately
-  # through seconds_since_last_good; we do not flap current_state on quiet
-  # periods (no writes looks the same as a short stall -- the dashboard's stall
-  # detector distinguishes them over time).
+  # through the TRUE row backlog (below) and seconds_since_last_good; we do not
+  # flap current_state on quiet periods.
   result["current_state"] = "good"
+
+  # True replication backlog in rows: source max change-log id minus the applied
+  # last_id. backlog 0 == fully caught up, even when the position is "old"
+  # because the source is simply quiet. Sets caught_up / backlog_rows on the
+  # result; leaves them absent (nil) when it can't be measured, so callers fall
+  # back to the freshness-age heuristic.
+  attach_replication_backlog!(result)
   result
 rescue StandardError => e
   { "error" => e.message }
+end
+
+# Extract the applied watermark (the bigint `last_id`) from a position token
+# string such as `{"last_id":132641370}`.
+def parse_applied_id(token)
+  return nil if token.nil? || token.to_s.strip.empty?
+  m = token.to_s.match(/"?last_id"?\s*:\s*(\d+)/)
+  m ? m[1].to_i : nil
+end
+
+# Source-side high-water mark of the change-log. Indexed max over the bigint PK,
+# so it is a single index probe; bounded by a short statement_timeout. Returns
+# nil on any failure so the caller degrades to the age heuristic.
+def source_change_log_max_id
+  return nil unless HEROKU_URL
+  out = `psql "#{psql_safe_url(HEROKU_URL)}" -A -t -c "SET statement_timeout='15s'; SELECT max(id) FROM #{SOURCE_CHANGE_LOG};" 2>/dev/null`.strip
+  return nil if out.empty?
+  val = out.lines.map(&:strip).reject(&:empty?).last.to_s
+  val.match?(/\A\d+\z/) ? val.to_i : nil
+rescue StandardError
+  nil
+end
+
+def attach_replication_backlog!(result)
+  applied = parse_applied_id(result["position_token"])
+  return if applied.nil?
+  src_max = source_change_log_max_id
+  return if src_max.nil?
+  backlog = [src_max - applied, 0].max
+  result["applied_id"] = applied
+  result["source_max_id"] = src_max
+  result["backlog_rows"] = backlog
+  result["caught_up"] = backlog.zero?
 end
 
 def read_copy_progress_file
@@ -370,7 +434,7 @@ def get_table_size_estimates(db_url)
           "JOIN pg_namespace n ON n.oid = c.relnamespace " \
           "WHERE n.nspname = 'public' AND c.relkind = 'r' " \
           "AND c.relname NOT LIKE 'sluice\\_%' ORDER BY c.relname;"
-  output = `psql "#{db_url}" -A -t -c "#{query}" 2>/dev/null`.strip
+  output = `psql "#{psql_safe_url(db_url)}" -A -t -c "#{query}" 2>/dev/null`.strip
   return {} if output.empty?
 
   sizes = {}
@@ -429,7 +493,12 @@ def extract_completed_tables(log_text, known_tables)
 end
 
 def compute_backlog_trend(history)
-  points = Array(history).last(6).map { |h| h["seconds_since_last_good"] }.select { |v| v.is_a?(Numeric) }
+  recent = Array(history).last(6)
+  # Prefer the TRUE row backlog series; fall back to position-freshness age only
+  # when the backlog can't be measured. The age series grows on a quiet source
+  # even when fully caught up, so it must never be the primary trend signal.
+  real = recent.map { |h| h["backlog_rows"] }.select { |v| v.is_a?(Numeric) }
+  points = real.length >= 3 ? real : recent.map { |h| h["seconds_since_last_good"] }.select { |v| v.is_a?(Numeric) }
   return "unknown" if points.length < 3
   deltas = points.each_cons(2).map { |a, b| b - a }
   return "growing" if deltas.all? { |d| d >= 0 } && deltas.any? { |d| d > 0 }
@@ -547,6 +616,8 @@ def build_progress_signals(phase:, sluice_status:, readiness:)
   elsif last_good
     (now - last_good).to_i
   end
+  backlog_rows = sluice_status.is_a?(Hash) ? sluice_status["backlog_rows"] : nil
+  caught_up = sluice_status.is_a?(Hash) ? sluice_status["caught_up"] : nil
 
   state["history"] ||= []
   history = state["history"]
@@ -555,6 +626,7 @@ def build_progress_signals(phase:, sluice_status:, readiness:)
     "tables_completed" => tables_completed,
     "copied_bytes" => copied_bytes,
     "seconds_since_last_good" => last_good_age,
+    "backlog_rows" => backlog_rows,
     "last_good_sync" => sluice_status.is_a?(Hash) ? sluice_status["last_good_sync"] : nil,
   }
   state["history"] = history.last(240)
@@ -569,10 +641,18 @@ def build_progress_signals(phase:, sluice_status:, readiness:)
   end
   state["last_progress_at"] = now.iso8601 if progress_advanced || state["last_progress_at"].nil?
 
-  backlog_trend = compute_backlog_trend(state["history"])
+  backlog_trend = caught_up ? "caught_up" : compute_backlog_trend(state["history"])
   health_state = if sluice_status.nil?
     "blocked"
+  elsif caught_up
+    # Applied watermark == source max change id: nothing to apply. Healthy
+    # regardless of how long since the last position write (quiet source).
+    "healthy"
   elsif sluice_healthy_for_replication?(sluice_status) && last_good_age && last_good_age <= 120
+    "healthy"
+  elsif sluice_healthy_for_replication?(sluice_status) && backlog_rows.is_a?(Numeric) && backlog_trend != "growing"
+    # Measurable backlog that is not growing (catching up / steady): healthy,
+    # not "degraded" just because the freshness age crossed 120s.
     "healthy"
   elsif sluice_healthy_for_replication?(sluice_status)
     "degraded"
@@ -629,6 +709,10 @@ def build_progress_signals(phase:, sluice_status:, readiness:)
       "last_good_sync" => sluice_status.is_a?(Hash) ? sluice_status["last_good_sync"] : nil,
       "seconds_since_last_good" => last_good_age,
       "backlog_trend" => backlog_trend,
+      "backlog_rows" => backlog_rows,
+      "caught_up" => caught_up,
+      "applied_id" => sluice_status.is_a?(Hash) ? sluice_status["applied_id"] : nil,
+      "source_max_id" => sluice_status.is_a?(Hash) ? sluice_status["source_max_id"] : nil,
       "health_state" => health_state,
       "blocker_reason" => blocker_reason,
     },
@@ -676,10 +760,19 @@ def build_cutover_readiness(phase:, sluice_status:)
     else
       hard_blockers << "initial_copy_not_finished" if sluice_status["initial_copy_phase"] != "finished"
       soft_blockers << "replication_not_healthy" unless sluice_healthy_for_replication?(sluice_status)
-      # A large freshness gap during replicating is a soft blocker: it may just
-      # be a quiet source, but warn the operator to confirm before cutover.
-      age = sluice_status["seconds_since_last_good"]
-      soft_blockers << "replication_lag_high" if age.is_a?(Numeric) && age > 300
+      # Lag gate: prefer the TRUE row backlog (source max change id minus the
+      # applied last_id). A quiet/caught-up source has backlog 0 even though the
+      # position's freshness age keeps growing, so it must NOT warn -- that was
+      # the false "replication_lag_high" on an idle source. Only warn when
+      # meaningfully behind. Fall back to the freshness-age heuristic only when
+      # the backlog can't be measured (psql unreachable / unparsable token).
+      backlog = sluice_status["backlog_rows"]
+      if backlog.is_a?(Numeric)
+        soft_blockers << "replication_lag_high" if backlog > LAG_ROWS_THRESHOLD
+      else
+        age = sluice_status["seconds_since_last_good"]
+        soft_blockers << "replication_lag_high" if age.is_a?(Numeric) && age > 300
+      end
     end
   end
 

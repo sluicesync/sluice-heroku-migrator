@@ -46,6 +46,17 @@ if [[ "$PLANETSCALE_URL" == *"sslmode=verify-full"* || "$PLANETSCALE_URL" == *"s
   fi
 fi
 
+# psql in this image (libpq 15) predates the `sslrootcert=system` special value
+# (libpq 16+) and treats "system" as a literal filename -> every psql shell-out
+# against the target would fail silently (errors -> /dev/null), which skipped the
+# auto-resume below (PERSISTED_PHASE empty) and broke HAS_POSITION detection.
+# sluice's own Go TLS uses PLANETSCALE_URL unchanged; only psql needs the real
+# CA bundle path so verify-full still verifies.
+PSQL_SSLROOTCERT="${PSQL_SSLROOTCERT:-/etc/ssl/certs/ca-certificates.crt}"
+psql_safe_url() { echo "$1" | sed -E "s#sslrootcert=system#sslrootcert=${PSQL_SSLROOTCERT}#"; }
+PSQL_PLANETSCALE_URL="$(psql_safe_url "$PLANETSCALE_URL")"
+export PSQL_PLANETSCALE_URL
+
 export HOME="/opt/sluice"
 STATE_DIR="/opt/sluice/state"
 SCRIPTS_DIR="/opt/sluice/scripts"
@@ -64,7 +75,7 @@ PERSISTED_STARTED=""
 PERSISTED_SWITCHED=""
 PERSISTED_COMPLETED=""
 
-STATE_ROW=$(psql "$PLANETSCALE_URL" -A -t -c "SELECT phase, started_at, switched_at, completed_at FROM _ps_migration_state WHERE id = 1" 2>/dev/null || echo "")
+STATE_ROW=$(psql "$PSQL_PLANETSCALE_URL" -A -t -c "SELECT phase, started_at, switched_at, completed_at FROM _ps_migration_state WHERE id = 1" 2>/dev/null || echo "")
 if [ -n "$STATE_ROW" ]; then
   PERSISTED_PHASE=$(echo "$STATE_ROW" | cut -d'|' -f1)
   PERSISTED_STARTED=$(echo "$STATE_ROW" | cut -d'|' -f2)
@@ -124,11 +135,28 @@ STATUS_SERVER_PID=$!
 # ready_to_copy is intentionally NOT auto-resumed: triggers are installed and
 # capturing, we just wait for the user to click Start Data Copy.
 # ---------------------------------------------------------------------------
-if [[ "$PERSISTED_PHASE" =~ ^(copying|replicating|configuring|starting)$ ]]; then
-  echo "Resuming sync after restart (was: $PERSISTED_PHASE)..."
+# sluice's own sluice_cdc_state row is the authoritative "replication is live"
+# signal -- it exists once CDC has started and is independent of the migrator's
+# _ps_migration_state wizard phase. Read it FIRST so we can safely warm-resume
+# even when _ps_migration_state is empty (never persisted, or first boot after
+# the psql/sslrootcert fix). It does NOT fully replace _ps_migration_state, which
+# also encodes pre-copy (ready_to_copy) and post-cutover (switched/completed/
+# aborted) phases sluice has no concept of -- so we still honor those.
+HAS_POSITION=$(psql "$PSQL_PLANETSCALE_URL" -A -t -c "SELECT 1 FROM sluice_cdc_state WHERE stream_id = '${STREAM_ID}' LIMIT 1" 2>/dev/null || echo "")
+
+# Phases the operator has deliberately moved past (or hasn't started): never
+# auto-resume CDC into these even if a stale cdc_state row lingers.
+NON_RESUMABLE_PHASE=0
+case "$PERSISTED_PHASE" in
+  switched|cleaning_up|completed|aborted|ready_to_copy|error) NON_RESUMABLE_PHASE=1 ;;
+esac
+
+# Resume when the wizard phase says mid-flight, OR when sluice itself has a live
+# CDC position and we're not in a deliberately-terminal phase.
+if [[ "$PERSISTED_PHASE" =~ ^(copying|replicating|configuring|starting)$ ]] || { [ "$NON_RESUMABLE_PHASE" = "0" ] && [ -n "$HAS_POSITION" ]; }; then
+  echo "Resuming sync after restart (phase='${PERSISTED_PHASE:-unknown}', cdc_position=$([ -n "$HAS_POSITION" ] && echo present || echo none))..."
 
   RESUME_ARGS=""
-  HAS_POSITION=$(psql "$PLANETSCALE_URL" -A -t -c "SELECT 1 FROM sluice_cdc_state WHERE stream_id = '${STREAM_ID}' LIMIT 1" 2>/dev/null || echo "")
   if [ "$PERSISTED_PHASE" = "replicating" ] || [ -n "$HAS_POSITION" ]; then
     echo "Persisted CDC position found; resuming without initial copy."
     RESUME_ARGS="--no-initial-copy"
