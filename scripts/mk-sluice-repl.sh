@@ -72,6 +72,14 @@ list_tables() {
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relkind = 'r'
+      -- Never replicate the engine's OWN bookkeeping tables. sluice_change_log
+      -- (and its _meta companion) carry a PK, so they'd otherwise be picked up
+      -- here on a re-run once they exist -- and a capture trigger on
+      -- sluice_change_log recurses infinitely (the capture function writes to
+      -- it), failing EVERY source write with 'stack depth limit exceeded'.
+      -- sluice's trigger setup also filters these defensively; this is the
+      -- caller-side guard so they never reach it in the first place.
+      AND c.relname NOT LIKE 'sluice\_%'
       AND EXISTS (
         SELECT 1 FROM pg_index i
         WHERE i.indrelid = c.oid AND (i.indisprimary OR i.indisunique)
