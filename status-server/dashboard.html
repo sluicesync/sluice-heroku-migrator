@@ -544,7 +544,6 @@
         <h1>PlanetScale Migration</h1>
       </div>
       <div class="header-right">
-        <a href="https://planetscale.com/contact" target="_blank" class="help-link">Need help?</a>
         <span id="lastUpdated" class="last-updated"></span>
       </div>
     </div>
@@ -722,10 +721,6 @@
       </div>
     </div>
 
-    <!-- Help Footer -->
-    <div class="help-footer">
-      Need assistance with your migration? <a href="https://planetscale.com/contact" target="_blank">Talk to our team</a>
-    </div>
 
   </div>
 
@@ -1379,7 +1374,7 @@
           + '<div class="guide-callout">Your Heroku database has not been modified. Your app is still running normally on Heroku.</div>'
           + (isSetupFailure
             ? '<p>This error occurred during initial setup. Fix the issue (e.g., add missing primary keys), then click Retry to start again.</p>'
-            : '<p>If you need help, <a href="https://planetscale.com/contact" target="_blank">contact the PlanetScale team</a>.</p>')
+            : '')
           + '<div class="guide-actions">'
           + '<button class="btn btn-primary btn-sm" onclick="retryMigration(this)">Retry Migration</button> '
           + '<button class="btn btn-danger btn-sm" onclick="handleAction(\'abort\', this)">Abort Migration</button>'
